@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js lt-ie9 lt-ie8 lt-ie7"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js lt-ie9 lt-ie8 ie7"> <![endif]-->
+<!--[if IE 8]>    <html class="no-js lt-ie9 ie8"> <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"> <!--<![endif]-->
+<head>
+	<meta charset="utf-8" />
+	<title>Real Time Chatting - Ajax with Long Polling</title>
+	<style>
+	/*<![CDATA[*/
+	body {
+		font: 14px Arial, Sans-serif;
+	}
+	.js .error {
+		display: none;
+	}
+	.no-js .error {
+		border: 1px solid red;
+		background: pink;
+		margin: 5px;
+		padding: 5px;
+	}
+	#connection {
+		display: inline-block;
+		width: 100px;
+	}
+	.lt-ie8 #connection {
+		zoom: 1;
+	}
+	#content {
+		border-left: 4px solid silver;
+		padding: 0 5px;
+		margin: 20px 0;
+	}
+	p {
+		margin: 5px;
+	}
+	#note {
+		font-weight: bold;
+	}
+	p span {
+		margin: 0 5px 0 0;
+	}
+	p.new {
+		font-weight: bold;
+		color: green;
+	}
+	form {
+		display: block;
+	}
+	#message {
+		width: 350px;
+	}
+	/*]]>*/
+	</style>
+	<script>
+	//<![CDATA[
+	"use strict";
+
+	if (top.location !== self.location) {
+		top.location = self.location.href;
+	}
+
+	(function (html) {
+		html.className = html.className.replace(/\bno-js\b/, "js");
+	})(document.documentElement);
+	//]]>
+	</script>
+</head>
+<body>
+	<p class="error">JavaScript is required for this demo to be functional.</p>
+	<h1>Real Time Chatting - Ajax with Long Polling</h1>
+	<p class="info"><span>Connection:</span><strong id="connection">Connecting...</strong><span>Current Status:</span><strong id="status">No Activity</strong></p>
+	<div id="content">
+		<p id="note">Welcome to this real time chatting room.</p>
+	</div>
+	<form id="form">
+		<label for="message">Message:</label>
+		<input type="text" id="message" value="" />
+		<input type="submit" id="button" value="Send" />
+	</form>
+
+	<script>
+	//<![CDATA[
+	"use strict";
+
+	// shorthand
+	function $(id) {
+		return document.getElementById(id);
+	}
+
+	// element.hasOwnProperty won't work in IE6/7/8
+	function hasOwnProperty(target, property) {
+		return Object.prototype.hasOwnProperty.call(target, property);
+	}
+
+	// determine whether the specified object is an instance of Array
+	function isArray(obj) {
+		if (Array.isArray) {
+			isArray = function (obj) {
+				return Array.isArray(obj);
+			};
+		} else {
+			isArray = function (obj) {
+				return Object.prototype.toString.call(obj) === "[object Array]";
+			};
+		}
+		return isArray(obj);
+	}
+
+	// get current date and time
+	function getCurrentDatetime() {
+		var pad = function (n) {
+				return n < 10 ? '0' + n : n;
+			},
+			date = new Date();
+		return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
+	}
+
+	// create an xhr
+	function createXHR () {
+		if (XMLHttpRequest !== undefined) {
+			createXHR = function () {
+				return new XMLHttpRequest();
+			};
+		} else if (ActiveXObject !== undefined) {
+			var versions = ["MSXML2.XMLHttp.6.0", "MSXML2.XMLHttp.3.0", "MSXML2.XMLHttp"],
+				i, activeXString;
+			for (i = 0; i < versions.length; i++) {
+				try {
+					new ActiveXObject(versions[i]);
+					activeXString = versions[i];
+				} catch (e) {
+					// skip
+				}
+			}
+			createXHR = function () {
+				return new ActiveXObject(activeXString);
+			};
+		} else {
+			createXHR = function () {
+				throw new Error("No XMLHttpRequest object available.");
+			};
+		}
+		return createXHR();
+	}
+
+	// convert an object to http parameter string
+	function serialize(data) {
+		var params = [], key, value, i;
+		for (key in data) {
+			if (data.hasOwnProperty(key)) {
+				value = data[key];
+				if (isArray(value)) {
+					for (i = 0; i < value.length; i++) {
+						params.push(encodeURIComponent(key) + '=' + encodeURIComponent(value[i]));
+					}
+				} else {
+					params.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
+				}
+			}
+		}
+		return params.join('&').replace(/%20/g, '+');  // replace all '%20'(space) with '+'
+	}
+
+	// make an ajax request
+	function request(options) {
+		var _options = {
+				method: "POST",
+				url: "",
+				data: {},
+				// xhr.readyState === 0, UNSENT
+				// The object has been constructed.
+				onUnsent: function (xhr) {},
+				
+				// xhr.readyState === 1, OPENED
+				// The open() method has been successfully invoked. During this state request headers can be set using setRequestHeader() and the request can be made using the send() method.
+				onOpened: function (xhr) {},
+
+				// xhr.readyState === 2, HEADERS_RECEIVED
+				// All redirects (if any) have been followed and all HTTP headers of the final response have been received. Several response members of the object are now available.
+				onSent: function (xhr) {},
+
+				// xhr.readyState === 3, LOADING
+				// The response entity body is being received.
+				onReceiving: function (xhr) {},
+
+				// xhr.readyState === 4, DONE
+				// The data transfer has been completed or something went wrong during the transfer (e.g. infinite redirects).
+				onComplete: function (xhr) {},
+
+				// xhr.readyState === 4 && ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 304)
+				onSuccess: function (xhr) {},
+
+				// !(xhr.readyState === 4 && ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 304))
+				onFailure: function (xhr) {}
+			},
+			xhr = createXHR();
+
+		// initializing properties
+		for (var option in options) {
+			if (hasOwnProperty(_options, option)) {
+				_options[option] = options[option];
+			}
+		}
+
+		// prevent from caching
+		_options.data.rand = (new Date()).getTime();
+		xhr.onreadystatechange = function () {
+			switch (xhr.readyState) {
+				case 0:
+					_options.onUnsent(xhr);
+					break;
+				case 1:
+					_options.onOpened(xhr);
+					break;
+				case 2:
+					_options.onSent(xhr);
+					break;
+				case 3:
+					_options.onReceiving(xhr);
+					break;
+				case 4:
+					_options.onComplete(xhr);
+					if ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 304) {
+						_options.onSuccess(xhr);
+					} else {
+						_options.onFailure(xhr);
+					}
+					break;
+			}
+		};
+		if (_options.method === "GET") {
+			xhr.open(_options.method, _options.url + '?' + serialize(_options.data), true);
+		} else {
+			xhr.open(_options.method, _options.url, true);
+			xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+		}
+		xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+		xhr.send(_options.method === "GET" ? null : serialize(_options.data));
+	}
+
+	var connection,  // current connection
+		status,  // current status
+		content,  // message area
+		note,  // note
+		message,
+		button,
+		form,
+		timestamp = 0,  // determine new message
+		msg = {
+			MSG_CAN_NOT_BE_EMPTY: "Message can not be empty.",
+			SEND: "Send",
+			SENDING: "Sending...",
+			SENDING_MSG: "Sending Message...",
+			MSG_SENT: "Message Sent.",
+			MSG_RECEIVED: "Message Received.",
+			NO_ACTIVITY: "No Activity.",
+			CONNECTING: "Connecting...",
+			CONNECTED: "Connected."
+		};
+	
+	window.onload = function () {
+		status = $("status");
+		connection = $("connection");
+		content = $("content");
+		note = $("note");
+		message = $("message");
+		button = $("button");
+		form = $("form");
+		
+		note.innerHTML = "<span>[" + getCurrentDatetime() + "]</span>" + note.innerHTML;
+
+		// bind send message function
+		form.onsubmit = function () {
+			if (/^\s*$/.test(message.value)) {
+				alert(msg.MSG_CAN_NOT_BE_EMPTY);
+			} else {
+				button.disabled = true;
+				button.value = msg.SENDING;
+				status.innerHTML = msg.SENDING_MSG;
+				request({
+					url: "backend.php",
+					data: {
+						message: message.value
+					},
+					onSuccess: function (xhr) {
+						status.innerHTML = msg.MSG_SENT;
+						message.value = "";
+						button.value = msg.SEND;
+						button.disabled = false;
+						setTimeout(function () {
+							status.innerHTML = msg.NO_ACTIVITY;
+						}, 3000);
+					}
+				});
+			}
+			return false;
+		};
+
+		// long polling to retrieve new message in real time
+		(function connectToServer() {
+			request({
+				url: "backend.php",
+				data: {
+					timestamp: timestamp
+				},
+				onSuccess: function (xhr) {
+					var p = document.createElement('p');
+					connection.innerHTML = msg.CONNECTED;
+					// response should be json string, if not something wrong may happened,
+					// such as exceeding max execution time, just ignore it and start another request
+					if (/^\{.*\}$/.test(xhr.responseText)) {
+						var data = eval('(' + xhr.responseText + ')');
+						p.innerHTML = "<span>[" + getCurrentDatetime() + "]</span>" + data.message;
+						p.className = "new";
+						timestamp = data.timestamp;
+						content.appendChild(p);
+						
+						if (status.innerHTML !== msg.MSG_SENT) {
+							status.innerHTML = msg.MSG_RECEIVED;
+							setTimeout(function () {
+								status.innerHTML = msg.NO_ACTIVITY;
+							}, 3000);
+						}
+						
+						setTimeout(function () {
+							p.className = "";
+						}, 3000);
+					}
+
+					connectToServer();  // start another long polling request
+				},
+				onFailure: function (xhr) {
+					connection.innerHTML = msg.CONNECTING;
+					setTimeout(function () {
+						connectToServer();
+					}, 5000);  // start another long polling request
+				}
+			});
+		})();
+	};
+	//]]>
+	</script>
+</body>
+</html>
